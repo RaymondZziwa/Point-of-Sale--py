@@ -7,6 +7,8 @@ import barcode
 from barcode.writer import ImageWriter
 from tkinter.simpledialog import askstring
 import csv
+import win32print
+import win32api
 # import win32print
 # import win32ui
 # from win32con import SRCCOPY
@@ -337,7 +339,7 @@ def sales_records():
                 writer.writerow(columns)
                 # Write data
                 for row in sales_table.get_children():
-                    writer.writerow(sales_table.item(row)["values"])
+                    writer.writerow(sales_table.item (row)["values"])
             messagebox.showinfo("Export Success", f"Sales records exported successfully to {file_path}")
         except Exception as e:
             messagebox.showerror("Export Error", f"Failed to export sales records: {e}")
@@ -553,6 +555,22 @@ def show_pos():
                 item = cart_table.item(child, "values")
                 product_id, name, price, quantity, discount, total = item
                 total_amount += float(total)
+                
+                #reduce qty in database
+                cursor.execute("SELECT quantity FROM store WHERE item_id = ?", (product_id,))
+                existing_record = cursor.fetchone()
+
+                if existing_record:
+                    # If the item already exists, update its quantity
+                    cursor.execute("""
+                        UPDATE store
+                        SET quantity = quantity - ?, updatedAt = CURRENT_TIMESTAMP
+                        WHERE item_id = ?
+                    """, (quantity, product_id))
+                else:
+                    # If the item doesn't exist, insert a new record  item_id INTEGER NOT NULL
+                    return messagebox.showerror("Input Error", f"Quantity for item {name} is more than what is in the store")
+                    
 
                 # Save sale to database (example schema)
                 cursor.execute(
@@ -571,6 +589,8 @@ def show_pos():
 
         receipt += f"\nTotal: {total_amount}\nThank you for your purchase!"
         
+        print_receipt(receipt)
+        
         # Display receipt
         receipt_window = tk.Toplevel()
         receipt_window.title("Receipt")
@@ -581,6 +601,147 @@ def show_pos():
 
     # Checkout Button
     tk.Button(content_frame, text="Checkout", command=checkout, bg="green", fg="white").pack(pady=10)
+
+def print_receipt(receipt_text):
+    try:
+        # Get default printer
+        printer_name = win32print.GetDefaultPrinter()
+
+        # Open printer and start print job
+        hprinter = win32print.OpenPrinter(printer_name)
+        job_info = win32print.StartDocPrinter(hprinter, 1, ("Receipt", None, "RAW"))
+        win32print.StartPagePrinter(hprinter)
+
+        # Send receipt text to the printer
+        win32print.WritePrinter(hprinter, receipt_text.encode('utf-8'))
+
+        # End the print job
+        win32print.EndPagePrinter(hprinter)
+        win32print.EndDocPrinter(hprinter)
+        win32print.ClosePrinter(hprinter)
+
+        messagebox.showinfo("Print Successful", "Receipt sent to the printer.")
+    except Exception as e:
+        messagebox.showerror("Print Error", f"Failed to print receipt: {e}")
+
+def monthly_sales_analysis():
+    """Display monthly sales analysis in the content frame."""
+    clear_content_frame()  # Clear the content frame first
+
+    # Configure content frame background
+    content_frame.configure(bg="white")
+
+    # Header
+    tk.Label(content_frame, text="Monthly Sales Analysis", font=("Helvetica", 16), bg="white").pack(pady=10)
+
+    # Year filter
+    tk.Label(content_frame, text="Filter by Year:", bg="white").pack(pady=5)
+    year_entry = tk.Entry(content_frame)
+    year_entry.pack(pady=5)
+
+    def fetch_monthly_sales():
+        year = year_entry.get()
+        if not year.isdigit():
+            messagebox.showerror("Input Error", "Please enter a valid year.")
+            return
+
+        # Treeview for displaying monthly sales
+        columns = ("Month", "Total Income")
+        monthly_sales_table = ttk.Treeview(content_frame, columns=columns, show="headings")
+        monthly_sales_table.pack(fill="both", expand=1, padx=10, pady=10)
+
+        # Define column headings
+        for col in columns:
+            monthly_sales_table.heading(col, text=col)
+            monthly_sales_table.column(col, anchor="center", width=200)
+
+        # Query monthly sales data from the database
+        try:
+            conn = connect_database()
+            cursor = conn.cursor()
+            cursor.execute(f"""
+                SELECT 
+                    STRFTIME('%Y-%m', createdAt) AS sale_month, 
+                    SUM(total) AS total_income
+                FROM 
+                    sales
+                WHERE
+                    STRFTIME('%Y', createdAt) = ?
+                GROUP BY 
+                    sale_month
+                ORDER BY 
+                    sale_month DESC
+            """, (year,))
+            monthly_sales = cursor.fetchall()  # Fetch all rows from the query result
+            conn.close()
+
+            # Populate the table with monthly sales data
+            for sale in monthly_sales:
+                monthly_sales_table.insert("", "end", values=sale)
+        except sqlite3.Error as e:
+            messagebox.showerror("Database Error", f"Failed to fetch monthly sales analysis: {e}")
+
+    tk.Button(content_frame, text="Fetch Monthly Sales", command=fetch_monthly_sales).pack(pady=10)
+
+
+def weekly_sales_analysis():
+    """Display weekly sales analysis in the content frame."""
+    clear_content_frame()  # Clear the content frame first
+
+    # Configure content frame background
+    content_frame.configure(bg="white")
+
+    # Header
+    tk.Label(content_frame, text="Weekly Sales Analysis", font=("Helvetica", 16), bg="white").pack(pady=10)
+
+    # Year filter
+    tk.Label(content_frame, text="Filter by Year:", bg="white").pack(pady=5)
+    year_entry = tk.Entry(content_frame)
+    year_entry.pack(pady=5)
+
+    def fetch_weekly_sales():
+        year = year_entry.get()
+        if not year.isdigit():
+            messagebox.showerror("Input Error", "Please enter a valid year.")
+            return
+
+        # Treeview for displaying weekly sales
+        columns = ("Week", "Total Income")
+        weekly_sales_table = ttk.Treeview(content_frame, columns=columns, show="headings")
+        weekly_sales_table.pack(fill="both", expand=1, padx=10, pady=10)
+
+        # Define column headings
+        for col in columns:
+            weekly_sales_table.heading(col, text=col)
+            weekly_sales_table.column(col, anchor="center", width=200)
+
+        # Query weekly sales data from the database
+        try:
+            conn = connect_database()
+            cursor = conn.cursor()
+            cursor.execute(f"""
+                SELECT 
+                    STRFTIME('%Y-%m', createdAt) || '-W' || (CAST(STRFTIME('%W', createdAt) AS INTEGER) + 1) AS sale_week, 
+                    SUM(total) AS total_income
+                FROM 
+                    sales
+                WHERE
+                    STRFTIME('%Y', createdAt) = ?
+                GROUP BY 
+                    sale_week
+                ORDER BY 
+                    sale_week DESC
+            """, (year,))
+            weekly_sales = cursor.fetchall()  # Fetch all rows from the query result
+            conn.close()
+
+            # Populate the table with weekly sales data
+            for sale in weekly_sales:
+                weekly_sales_table.insert("", "end", values=sale)
+        except sqlite3.Error as e:
+            messagebox.showerror("Database Error", f"Failed to fetch weekly sales analysis: {e}")
+
+    tk.Button(content_frame, text="Fetch Weekly Sales", command=fetch_weekly_sales).pack(pady=10)
 
 def daily_sales_analysis():
     """Display daily sales analysis in the content frame."""
@@ -661,6 +822,14 @@ def manage_inventory():
 
     # Header
     tk.Label(content_frame, text="Inventory Management", font=("Helvetica", 16), bg="white").pack(pady=10)
+    
+    # Buttons for restocking and depleting inventory
+    button_frame = tk.Frame(content_frame, bg="white")
+    button_frame.pack(pady=10)
+
+    tk.Button(button_frame, text="Restock Item", command=restock_item,  width=15).grid(row=0, column=0, padx=10)
+    tk.Button(button_frame, text="Deplete Item", command=deplete_item,  width=15).grid(row=0, column=1, padx=10)
+
 
     # Treeview for displaying inventory records
     columns = ("ID", "Category", "Item", "Quantity", "Created At", "Updated At")
@@ -708,9 +877,9 @@ def manage_inventory():
     # Initial data load
     load_inventory_data()
 
-    # Restock Function
-    def restock_item():
-        #"""Restock an item in the inventory with a dropdown selection."""
+# Restock Function
+def restock_item():
+    #"""Deplete an item in the inventory with a dropdown selection."""
         def submit_restock():
             #"""Handle the restock submission."""
             try:
@@ -746,25 +915,22 @@ def manage_inventory():
                     """, (quantity, item_id))
                 else:
                     # If the item doesn't exist, insert a new record  item_id INTEGER NOT NULL
-                    cursor.execute("""
-                        INSERT INTO store (item_id, quantity)
-                        VALUES (?, ?)
-                    """, (item_id, quantity))
+                    return messagebox.showerror("Input Error", "Quantity is more than what is in the store")
                     
                 cursor.execute ("""
                         INSERT INTO inventory_records (category, item_id, quantity, notes)
                         VALUES (?, ?, ?, ?)
-                    """, ('Incoming', item_id, quantity, notes))
+                    """, ('Depleting', item_id, quantity, notes))
 
                 conn.commit()
                 conn.close()
 
-                messagebox.showinfo("Restock Success", "Item restocked successfully!")
+                messagebox.showinfo("Deplete Success", "Item restocked successfully!")
                 load_inventory_data()  # Refresh inventory table
                 restock_window.destroy()  # Close the restock window
 
             except sqlite3.Error as e:
-                messagebox.showerror("Database Error", f"Failed to restock item: {e}")
+                messagebox.showerror("Database Error", f"Failed to deplete item: {e}")
 
         # Create a new Toplevel window for restocking
         restock_window = tk.Toplevel()
@@ -807,10 +973,12 @@ def manage_inventory():
         # Submit button
         tk.Button(restock_window, text="Submit", command=submit_restock).pack(pady=10)
 
+    # Refresh button to reload inventory data
+    #tk.Button(content_frame, text="Refresh Inventory", command=load_inventory_data, width=20).pack(pady=10)
 
-    # Deplete Function
-    def deplete_item():
-        #"""Deplete an item in the inventory with a dropdown selection."""
+# Deplete Function
+def deplete_item():
+    #"""Deplete an item in the inventory with a dropdown selection."""
         def submit_restock():
             #"""Handle the restock submission."""
             try:
@@ -904,14 +1072,6 @@ def manage_inventory():
         # Submit button
         tk.Button(restock_window, text="Submit", command=submit_restock).pack(pady=10)
 
-
-    # Buttons for restocking and depleting inventory
-    button_frame = tk.Frame(content_frame, bg="white")
-    button_frame.pack(pady=10)
-
-    tk.Button(button_frame, text="Restock Item", command=restock_item,  width=15).grid(row=0, column=0, padx=10)
-    tk.Button(button_frame, text="Deplete Item", command=deplete_item,  width=15).grid(row=0, column=1, padx=10)
-
     # Refresh button to reload inventory data
     #tk.Button(content_frame, text="Refresh Inventory", command=load_inventory_data, width=20).pack(pady=10)
 
@@ -940,6 +1100,10 @@ def button_action(name):
         sales_records()
     elif name == "Daily Sales Income Analysis":
         daily_sales_analysis()
+    elif name == "Weekly Sales Income Analysis":
+        weekly_sales_analysis()
+    elif name == "Monthly Sales Income Analysis":
+        monthly_sales_analysis()
     else:
         print(f"Unknown button action: {name}")
 
@@ -961,19 +1125,21 @@ def build_GUI():
     heading_label.pack(pady=20)
     
     #button icons
-    products_icn = PhotoImage(file='assets/box-solid.png')
-    store_icn = PhotoImage(file='assets/store-solid.png')
-    cart_icn = PhotoImage(file='assets/cart-shopping-solid (1).png')
-    records_icn = PhotoImage(file='assets/book-solid.png')
+    #products_icn = PhotoImage(file='assets/box-solid.png')
+    #store_icn = PhotoImage(file='assets/store-solid.png')
+    #cart_icn = PhotoImage(file='assets/cart-shopping-solid (1).png')
+    #records_icn = PhotoImage(file='assets/book-solid.png')
     
     #buttons
     buttons = [
-        ('Items', products_icn),
-        ('Store', store_icn),
-        ('Stock taking', store_icn),
-        ('POS', cart_icn),
-        ('Sales records', records_icn),
-        ('Daily Sales Income Analysis', records_icn),
+        ('Items', None),
+        ('Store', None),
+        ('Stock taking', None),
+        ('POS', None),
+        ('Sales records', None),
+        ('Daily Sales Income Analysis', None),
+        ('Weekly Sales Income Analysis', None),
+        ('Monthly Sales Income Analysis', None),
         ('Exit', None)
     ]
     

@@ -6,3 +6,4 @@ pyinstaller==6.11.1
 pyinstaller-hooks-contrib==2024.10
 python-barcode==0.15.1
 setuptools==75.6.0
+pywin32; platform_system == "Windows"

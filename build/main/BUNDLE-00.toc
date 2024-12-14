@@ -1,3 +1,0 @@
-([('main',
-   '/Users/zziwaraymondian/Desktop/PROJECTS/dsk-pos/dist/main',
-   'EXECUTABLE')],)
