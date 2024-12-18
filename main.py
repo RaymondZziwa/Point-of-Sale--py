@@ -9,6 +9,10 @@ from tkinter.simpledialog import askstring
 import csv
 import win32print
 import win32api
+from reportlab.lib.pagesizes import letter
+from reportlab.pdfgen import canvas
+from datetime import datetime
+from reportlab.lib.pagesizes import inch
 # import win32print
 # import win32ui
 # from win32con import SRCCOPY
@@ -528,6 +532,23 @@ def show_pos():
                 cart_table.item(child, values=(item[0], item[1], price, quantity, discount, total))
                 return
 
+    # Controls for modifying cart items
+    def modify_cart(action):
+        selected_item = cart_table.selection()
+        if not selected_item:
+            messagebox.showerror("Error", "No item selected!")
+            return
+        item_id = cart_table.item(selected_item[0], "values")[0]
+        update_cart(action, item_id)
+
+    # Buttons for cart operations
+    button_frame = tk.Frame(content_frame, bg="white")
+    button_frame.pack(pady=10)
+
+    tk.Button(button_frame, text="Increase Quantity", command=lambda: modify_cart("increase"), bg="blue", fg="white").pack(side="left", padx=5)
+    tk.Button(button_frame, text="Decrease Quantity", command=lambda: modify_cart("decrease"), bg="orange", fg="white").pack(side="left", padx=5)
+    tk.Button(button_frame, text="Apply Discount", command=lambda: modify_cart("discount"), bg="green", fg="white").pack(side="left", padx=5)
+
     # Checkout functionality
     def checkout():
         if not cart_table.get_children():
@@ -544,7 +565,14 @@ def show_pos():
             return
 
         # Generate receipt and save to database
-        receipt = f"Receipt\nClient: {client_name}\nPhone: {client_phone}\n\n"
+        receipt = (
+            f"Receipt\n"
+            f"Client: {client_name}\n"
+            f"Phone: {client_phone}\n"
+            f"Payment method: {payment_method}\n\n"
+            f"{'Item':<20}{'Qty':<10}{'Price':<10}{'Total':<10}\n"
+            f"{'-'*60}\n"
+        )
         total_amount = 0
 
         try:
@@ -553,25 +581,23 @@ def show_pos():
 
             for child in cart_table.get_children():
                 item = cart_table.item(child, "values")
+                print(item)
                 product_id, name, price, quantity, discount, total = item
                 total_amount += float(total)
-                
-                #reduce qty in database
-                cursor.execute("SELECT quantity FROM store WHERE item_id = ?", (product_id,))
-                existing_record = cursor.fetchone()
-
+                existing_record = cursor.execute('SELECT quantity FROM store WHERE item_id = ?', (product_id)).fetchone()
                 if existing_record:
-                    # If the item already exists, update its quantity
-                    cursor.execute("""
-                        UPDATE store
-                        SET quantity = quantity - ?, updatedAt = CURRENT_TIMESTAMP
-                        WHERE item_id = ?
-                    """, (quantity, product_id))
+                    stock_quantity = existing_record[0]
+                    if stock_quantity <= 0:
+                        messagebox.showerror("Input Error", f"Product {name} is out of stock.")
+                        return
+                    elif int(stock_quantity) < int(quantity):  # If there is not enough quantity to reduce
+                        messagebox.showerror("Input Error", f"Insufficient stock for {name}.")
+                        return   
+                    else:
+                        cursor.execute('UPDATE store SET quantity = ? WHERE item_id = ?', (int(stock_quantity) - int(quantity), product_id))                 
                 else:
-                    # If the item doesn't exist, insert a new record  item_id INTEGER NOT NULL
-                    return messagebox.showerror("Input Error", f"Quantity for item {name} is more than what is in the store")
-                    
-
+                    messagebox.showerror("Stock Error", f"Insufficient stock for {name}.")
+                    return
                 # Save sale to database (example schema)
                 cursor.execute(
                     "INSERT INTO sales (product_id, client_name, client_phone, quantity, discount, total, payment_method) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -579,7 +605,7 @@ def show_pos():
                 )
 
                 # Add item to receipt
-                receipt += f"{name}: {quantity} x {price} - {discount} = {total}\n"
+                receipt += f"{name:<20}{quantity:<10}{price:<10}{total:<10}\n"
 
             conn.commit()
             conn.close()
@@ -589,40 +615,82 @@ def show_pos():
 
         receipt += f"\nTotal: {total_amount}\nThank you for your purchase!"
         
-        print_receipt(receipt)
+        # Print the receipt
+        format_receipt(receipt, client_name)
         
-        # Display receipt
+        # Display receipt in a new window
         receipt_window = tk.Toplevel()
         receipt_window.title("Receipt")
         receipt_window.geometry("600x600")
-        tk.Text(receipt_window, wrap="word", height=20, width=50).insert("1.0", receipt)
-
+        text_widget = tk.Text(receipt_window, wrap="word", height=20, width=50)
+        text_widget.insert("1.0", receipt)
+        text_widget.pack()
         cart_table.delete(*cart_table.get_children())  # Clear cart after checkout
 
     # Checkout Button
     tk.Button(content_frame, text="Checkout", command=checkout, bg="green", fg="white").pack(pady=10)
 
-def print_receipt(receipt_text):
-    try:
-        # Get default printer
-        printer_name = win32print.GetDefaultPrinter()
 
-        # Open printer and start print job
-        hprinter = win32print.OpenPrinter(printer_name)
-        job_info = win32print.StartDocPrinter(hprinter, 1, ("Receipt", None, "RAW"))
-        win32print.StartPagePrinter(hprinter)
+# Function to print receipt
+def format_receipt(receipt_text, client_name):
+    now = datetime.now()
 
-        # Send receipt text to the printer
-        win32print.WritePrinter(hprinter, receipt_text.encode('utf-8'))
+    # Format date and time as a string
+    timestamp = now.strftime("%Y-%m-%d_%H-%M-%S")
+    # Generate the PDF file
+    receipt_filename = f"{client_name}_{timestamp}.pdf"
+    create_pdf(receipt_text, receipt_filename)
 
-        # End the print job
-        win32print.EndPagePrinter(hprinter)
-        win32print.EndDocPrinter(hprinter)
-        win32print.ClosePrinter(hprinter)
+# Function to generate a PDF using reportlab
+def create_pdf(receipt_text, filename):
+    """Create a PDF receipt with custom size and save it in a 'receipts' folder."""
+    
+    # Define the receipt paper size: 3 inches wide x 11 inches high
+    receipt_width = 3 * inch
+    receipt_height = 11 * inch
+    receipt_size = (receipt_width, receipt_height)
 
-        messagebox.showinfo("Print Successful", "Receipt sent to the printer.")
-    except Exception as e:
-        messagebox.showerror("Print Error", f"Failed to print receipt: {e}")
+    # Ensure the 'receipts' folder exists
+    receipts_folder = "receipts"
+    os.makedirs(receipts_folder, exist_ok=True)
+
+    # Generate the full path for the PDF file
+    full_path = os.path.join(receipts_folder, filename)
+
+    # Create the canvas with custom page size
+    c = canvas.Canvas(full_path, pagesize=receipt_size)
+
+    # Add receipt content
+    margin_x = 20  # Left margin
+    margin_y = receipt_height - 30  # Top margin
+    text_object = c.beginText(margin_x, margin_y)
+    text_object.setFont("Helvetica", 10)
+
+    # Add each line of the receipt text
+    for line in receipt_text.split("\n"):
+        text_object.textLine(line)
+    
+    # Draw the text and save the PDF
+    c.drawText(text_object)
+    c.save()
+
+    print_receipt(full_path)
+
+# Function to send PDF to the printer using win32print
+def print_receipt(filepath):
+    print(filepath)
+    printer_name = win32print.GetDefaultPrinter()
+    print(f"Sending to printer: {printer_name}")
+    
+    # Use win32api to print the file
+    win32api.ShellExecute(
+        0, 
+        "print", 
+        filepath, 
+        None, 
+        ".", 
+        0
+    )
 
 def monthly_sales_analysis():
     """Display monthly sales analysis in the content frame."""
@@ -915,12 +983,14 @@ def restock_item():
                     """, (quantity, item_id))
                 else:
                     # If the item doesn't exist, insert a new record  item_id INTEGER NOT NULL
-                    return messagebox.showerror("Input Error", "Quantity is more than what is in the store")
+                    cursor.execute("""
+                        INSERT INTO store (item_id, quantity) VALUES (?,?)
+                    """, (item_id, quantity))
                     
                 cursor.execute ("""
                         INSERT INTO inventory_records (category, item_id, quantity, notes)
                         VALUES (?, ?, ?, ?)
-                    """, ('Depleting', item_id, quantity, notes))
+                    """, ('Restocking', item_id, quantity, notes))
 
                 conn.commit()
                 conn.close()
